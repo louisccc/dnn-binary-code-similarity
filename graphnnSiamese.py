@@ -101,7 +101,8 @@ class graphnn(object):
     def init(self, LOAD_PATH, LOG_PATH):
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
-        sess = tf.Session(config=config)
+        #sess = tf.Session(config=config)
+        sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=False))
         saver = tf.train.Saver()
         self.sess = sess
         self.saver = saver

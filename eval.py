@@ -8,6 +8,8 @@ from utils import *
 import os
 import argparse
 import json
+from tqdm import tqdm
+from sklearn.metrics.pairwise import euclidean_distances
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=str, default='0',
@@ -34,8 +36,25 @@ parser.add_argument('--load_path', type=str,
 parser.add_argument('--log_path', type=str, default=None,
         help='path for training log')
 
+def get_avr_topk_hitrate(distances, all_labels, tested_function_idx, my_label, topk=1):
+    new_distances = np.delete(distances, tested_function_idx)
+    all_labels = np.delete(all_labels, tested_function_idx)
+    groups = [all_labels[np.where(new_distances == _)[0]] for _ in sorted(np.unique(new_distances))[:topk]]
+    
+    if not my_label in all_labels:
+        return [-1] * topk
 
-
+    k = []
+    hit = 0
+    for group in groups:
+        if my_label in group:
+            hit = 1
+            while len(k) != topk:
+                k.append(hit)
+            break
+        else:
+            k.append(hit)
+    return k
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -88,7 +107,7 @@ if __name__ == '__main__':
         np.save('data/class_perm.npy', perm)
 
     Gs_train, classes_train, Gs_dev, classes_dev, Gs_test, classes_test =\
-            partition_data(Gs,classes,[0.8,0.1,0.1],perm)
+            partition_data(Gs,classes,[0.8,0.0,0.2],perm)
 
     print "Train: {} graphs, {} functions".format(
             len(Gs_train), len(classes_train))
@@ -98,27 +117,37 @@ if __name__ == '__main__':
             len(Gs_test), len(classes_test))
 
     # Fix the pairs for validation and testing
-    if os.path.isfile('data/valid.json'):
-        with open('data/valid.json') as inf:
-            valid_ids = json.load(inf)
-        valid_epoch = generate_epoch_pair(
-                Gs_dev, classes_dev, BATCH_SIZE, load_id=valid_ids)
-    else:
-        valid_epoch, valid_ids = generate_epoch_pair(
-                Gs_dev, classes_dev, BATCH_SIZE, output_id=True)
-        with open('data/valid.json', 'w') as outf:
-            json.dump(valid_ids, outf)
+    # if os.path.isfile('data/valid.json'):
+    #     with open('data/valid.json') as inf:
+    #         valid_ids = json.load(inf)
+    #     valid_epoch = generate_epoch_pair(
+    #             Gs_dev, classes_dev, BATCH_SIZE, load_id=valid_ids)
+    # else:
+    #     valid_epoch, valid_ids = generate_epoch_pair(
+    #             Gs_dev, classes_dev, BATCH_SIZE, output_id=True)
+    #     with open('data/valid.json', 'w') as outf:
+    #         json.dump(valid_ids, outf)
 
-    if os.path.isfile('data/test.json'):
-        with open('data/test.json') as inf:
-            test_ids = json.load(inf)
-        test_epoch = generate_epoch_pair(
-                Gs_test, classes_test, BATCH_SIZE, load_id=test_ids)
-    else:
-        test_epoch, test_ids = generate_epoch_pair(
-                Gs_test, classes_test, BATCH_SIZE, output_id=True)
-        with open('data/test.json', 'w') as outf:
-            json.dump(test_ids, outf)
+    # if os.path.isfile('data/test.json'):
+    #     with open('data/test.json') as inf:
+    #         test_ids = json.load(inf)
+    #     test_epoch = generate_epoch_pair(
+    #             Gs_test, classes_test, BATCH_SIZE, load_id=test_ids)
+    # else:
+    #     test_epoch, test_ids = generate_epoch_pair(
+    #             Gs_test, classes_test, BATCH_SIZE, output_id=True)
+    #     with open('data/test.json', 'w') as outf:
+    #         json.dump(test_ids, outf)
+
+    # valid_epoch, valid_ids = generate_epoch_pair(
+    #         Gs_dev, classes_dev, BATCH_SIZE, output_id=True)
+    # with open('data/valid.json', 'w') as outf:
+    #     json.dump(valid_ids, outf)
+
+    # test_epoch, test_ids = generate_epoch_pair(
+    #         Gs_test, classes_test, BATCH_SIZE, output_id=True)
+    # with open('data/test.json', 'w') as outf:
+    #     json.dump(test_ids, outf)
 
     # Model
     gnn = graphnn(
@@ -133,9 +162,54 @@ if __name__ == '__main__':
     gnn.init(LOAD_PATH, LOG_PATH)
 
     # Test
-    val_auc, fpr, tpr, thres = get_auc_epoch(
-            gnn, Gs_dev, classes_dev, BATCH_SIZE, load_data=valid_epoch)
-    gnn.say( "AUC on validation set: {}".format(val_auc) )
-    test_auc, fpr, tpr, thres = get_auc_epoch(
-            gnn, Gs_test, classes_test, BATCH_SIZE, load_data=test_epoch)
-    gnn.say( "AUC on testing set: {}".format(test_auc) )
+    # val_auc, fpr, tpr, thres = get_auc_epoch(
+    #         gnn, Gs_dev, classes_dev, BATCH_SIZE, load_data=valid_epoch)
+    # gnn.say( "AUC on validation set: {}".format(val_auc) )
+    # test_auc, fpr, tpr, thres = get_auc_epoch(
+    #         gnn, Gs_test, classes_test, BATCH_SIZE, load_data=test_epoch)
+    # gnn.say( "AUC on testing set: {}".format(test_auc) )
+
+    
+    embeds = []
+    all_labels = []
+    feature_dim = len(Gs[0].features[0])
+
+    for graph in tqdm(Gs):
+        all_labels.append(graph.label)
+        X = np.zeros((1, graph.node_num, feature_dim))          # expects batch size for getting embedding so batch is set to 1
+        mask = np.zeros((1, graph.node_num, graph.node_num))
+
+        for node in range(graph.node_num):
+            X[0, node, :] = np.array(graph.features[node])
+            for edge in graph.succs[node]:
+                mask[0, node, edge] = 1
+
+        embeds.append(gnn.get_embed(X, mask).squeeze())               # get_embed is their own function, requires X and mask
+                
+    all_labels = np.asarray(all_labels)
+    embeds = np.asarray(embeds)
+
+    topk_precision = 10
+    test_hits = [0] * topk_precision
+    test_able_hits = len(Gs_test)
+    
+    for test_graph in tqdm(Gs_test):
+        k = []
+        curr_function_idx = Gs.index(test_graph)
+        label = test_graph.label
+
+        distances = euclidean_distances([embeds[curr_function_idx]], embeds) # 1 by len(Gs_test)
+        distances = distances.squeeze()   
+
+        topk_hits = get_avr_topk_hitrate(distances, all_labels, curr_function_idx, label, topk=topk_precision)
+
+        if all(hit == -1 for hit in topk_hits):
+            test_able_hits -= 1
+
+        else:
+            for idx, hit in enumerate(topk_hits):
+                test_hits[idx] += hit
+
+    print("Test set hitrates: ")
+    for k in range(1, topk_precision+1):
+        print("p@%d: %f" % (k, test_hits[k-1]/float(test_able_hits)))
